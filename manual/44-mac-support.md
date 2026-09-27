@@ -79,4 +79,4 @@ This reaches a desktop without GPU acceleration. To turn the GPU back on, run th
 omarchy-install-imac20-amdgpu-hwaccel
 ```
 
-It adds an `imac20-hwaccel` Limine entry that boots the `linux-t2` kernel's own `amdgpu` with `amdgpu.modeset=1 video=efifb:off`, and keeps a pacman hook that rebuilds the entry when `linux-t2` is upgraded. The safe `nomodeset` entry stays in place. Reboot and pick the new entry from the Limine menu. Once it works, `omarchy-install-imac20-amdgpu-hwaccel --default` boots it by default, and `--remove` takes it out again.
+It adds an `imac20-hwaccel` Limine entry that boots the `linux-t2` kernel's own `amdgpu` with `amdgpu.modeset=1 video=efifb:off`, and keeps a pacman hook that rebuilds the entry when `linux-t2`, `mkinitcpio` or firmware is upgraded. The safe `nomodeset` entry stays in place. Reboot and pick the new entry from the Limine menu. Once it works, `omarchy-install-imac20-amdgpu-hwaccel --default` boots it by default, and `--remove` takes it out again and puts the previous default back.

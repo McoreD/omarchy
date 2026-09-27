@@ -22,70 +22,129 @@ set -euo pipefail
 DISPLAY_CONF="${OMARCHY_IMAC20_DISPLAY_CONF:-/etc/limine-entry-tool.d/imac20-display.conf}"
 LIMINE_CONF="${OMARCHY_LIMINE_CONF:-/boot/limine.conf}"
 UKI_DIR="${OMARCHY_UKI_DIR:-/boot/EFI/Linux}"
+MODULES_DIR="${OMARCHY_MODULES_DIR:-/usr/lib/modules}"
 SAFE_UKI=$UKI_DIR/omarchy_linux-t2.efi
 HWACCEL_UKI=$UKI_DIR/omarchy_linux-t2-hwaccel.efi
 ENTRY=imac20-hwaccel
 HOOK="${OMARCHY_IMAC20_HWACCEL_HOOK:-/etc/pacman.d/hooks/zz-omarchy-imac20-hwaccel.hook}"
-SAFE_FLAGS="plymouth.enable=0 nomodeset"
-HWACCEL_FLAGS="plymouth.enable=0 amdgpu.modeset=1 video=efifb:off"
+# The default_entry line --default replaced, restored by --remove.
+SAVED_DEFAULT="${OMARCHY_IMAC20_HWACCEL_SAVED_DEFAULT:-/var/lib/omarchy/imac20-hwaccel-default-entry}"
+HWACCEL_FLAGS=(amdgpu.modeset=1 video=efifb:off)
 
 uki_cmdline() {
   sudo objcopy -O binary --only-section=.cmdline "$1" /dev/stdout 2>/dev/null | tr -d '\0'
 }
 
-write_display_conf() {
-  sudo tee "$DISPLAY_CONF" >/dev/null <<EOF
-# 2020 27" 5K iMac (iMac20,1 / iMac20,2) with Radeon Pro 5300/5500 (Navi 14).
-# amdgpu SMU init fails under KMS and blanks the panel before LUKS.
-KERNEL_CMDLINE[default]+=" $1"
-EOF
+linux_t2_kernel() {
+  local pkgbase
+  for pkgbase in "$MODULES_DIR"/*/pkgbase; do
+    [[ -f $pkgbase && $(<"$pkgbase") == linux-t2 ]] && { echo "${pkgbase%/pkgbase}/vmlinuz"; return 0; }
+  done
+  return 1
 }
 
-remove_entry() {
-  sudo limine-entry-tool --remove-efi-path "$HWACCEL_UKI" >/dev/null 2>&1 || sudo rm -f "$HWACCEL_UKI"
-  sudo sed -i "s|^default_entry: $ENTRY$|#default_entry: <OS name>/<kernel name>|" "$LIMINE_CONF"
-}
-
-build_entry() {
-  # limine-mkinitcpio only builds the default UKI, so build it once with the
-  # hardware-acceleration flags, keep a copy, then rebuild the safe one.
-  trap 'write_display_conf "$SAFE_FLAGS"' EXIT
-  write_display_conf "$HWACCEL_FLAGS"
-  sudo limine-mkinitcpio >/dev/null
-  uki_cmdline "$SAFE_UKI" | grep -q 'amdgpu.modeset=1' || { echo "Hardware-acceleration flags missing from the built UKI"; exit 1; }
-  sudo cp "$SAFE_UKI" "$HWACCEL_UKI"
-
-  write_display_conf "$SAFE_FLAGS"
-  trap - EXIT
-  sudo limine-mkinitcpio >/dev/null
-  uki_cmdline "$SAFE_UKI" | grep -q 'nomodeset' || { echo "Safe flags missing from the rebuilt UKI"; exit 1; }
-
+register_entry() {
   sudo limine-entry-tool --add-efi "$ENTRY" "$HWACCEL_UKI" --overwrite \
     --comment "Hardware acceleration. Black screen? Boot the Omarchy entry." >/dev/null
 }
 
+build_entry() {
+  # Build the second UKI on its own from the safe UKI's cmdline, with nomodeset
+  # swapped for the hardware-acceleration flags. The safe UKI, its drop-in and
+  # the Omarchy entries are never touched, so a failed or interrupted build
+  # cannot leave the default entry on the hardware-acceleration path.
+  local kernel word safe_cmdline safe_words hwaccel_cmdline=() build_dir
+  kernel=$(linux_t2_kernel) || { echo "No linux-t2 kernel under $MODULES_DIR"; return 1; }
+  safe_cmdline=$(uki_cmdline "$SAFE_UKI")
+  [[ " $safe_cmdline " == *" nomodeset "* ]] || { echo "Safe UKI cmdline has no nomodeset: $safe_cmdline"; return 1; }
+  read -ra safe_words <<<"$safe_cmdline"
+  for word in "${safe_words[@]}"; do
+    [[ $word == nomodeset ]] && hwaccel_cmdline+=("${HWACCEL_FLAGS[@]}") || hwaccel_cmdline+=("$word")
+  done
+
+  build_dir=$(mktemp -d)
+  echo "${hwaccel_cmdline[*]}" >"$build_dir/cmdline"
+  if ! sudo mkinitcpio -k "$kernel" -U "$build_dir/hwaccel.efi" --cmdline "$build_dir/cmdline" >/dev/null ||
+    [[ " $(uki_cmdline "$build_dir/hwaccel.efi") " != *" ${HWACCEL_FLAGS[*]} "* ]]; then
+    sudo rm -rf "$build_dir"
+    echo "Could not build the hardware-acceleration UKI"
+    return 1
+  fi
+  sudo cp "$build_dir/hwaccel.efi" "$HWACCEL_UKI" || { sudo rm -rf "$build_dir"; return 1; }
+  sudo rm -rf "$build_dir"
+
+  register_entry
+}
+
 set_default() {
-  if grep -q '^#\?default_entry:' "$LIMINE_CONF"; then
-    sudo sed -i "s|^#\?default_entry:.*|default_entry: $ENTRY|" "$LIMINE_CONF"
+  local current
+  current=$(grep -m1 '^#\?default_entry:' "$LIMINE_CONF" || true)
+  if [[ $current != "default_entry: $ENTRY" ]]; then
+    sudo mkdir -p "$(dirname "$SAVED_DEFAULT")"
+    printf '%s\n' "$current" | sudo tee "$SAVED_DEFAULT" >/dev/null
+  fi
+
+  if [[ -n $current ]]; then
+    sudo sed -i "0,/^#\?default_entry:.*/s||default_entry: $ENTRY|" "$LIMINE_CONF"
   else
     echo "default_entry: $ENTRY" | sudo tee -a "$LIMINE_CONF" >/dev/null
   fi
 }
 
+restore_default() {
+  # Put back the default_entry line --default replaced. Without a saved line,
+  # fall back to Omarchy's own `default_entry: 2` (its first kernel entry) so
+  # the menu keeps autobooting.
+  if grep -qx "default_entry: $ENTRY" "$LIMINE_CONF"; then
+    local saved="default_entry: 2"
+    [[ -f $SAVED_DEFAULT ]] && saved=$(<"$SAVED_DEFAULT")
+    if [[ -z $saved ]]; then
+      sudo sed -i "/^default_entry: $ENTRY$/d" "$LIMINE_CONF"
+    else
+      saved=${saved//\\/\\\\}
+      saved=${saved//&/\\&}
+      saved=${saved//|/\\|}
+      sudo sed -i "s|^default_entry: $ENTRY$|$saved|" "$LIMINE_CONF"
+    fi
+  fi
+  sudo rm -f "$SAVED_DEFAULT"
+}
+
+remove_entry() {
+  # Edit limine.conf before limine-entry-tool writes it, so the tool's write
+  # comes last (and re-enrolls the config checksum when that is enabled).
+  restore_default
+  sudo limine-entry-tool --remove-efi-path "$HWACCEL_UKI" >/dev/null 2>&1 || sudo rm -f "$HWACCEL_UKI"
+}
+
 install_hook() {
+  # Named zz- to run after the limine-mkinitcpio hook, so the safe UKI it reads
+  # the cmdline from is already rebuilt. Besides linux-t2, rebuild on anything
+  # that goes into the initramfs, so the entry never boots a stale one.
   sudo mkdir -p "$(dirname "$HOOK")"
-  sudo tee "$HOOK" >/dev/null <<EOF
+  sudo tee "$HOOK" >/dev/null <<HOOK_EOF
 [Trigger]
 Operation = Install
 Operation = Upgrade
 Type = Package
 Target = linux-t2
+Target = mkinitcpio
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/lib/initcpio/*
+Target = usr/lib/firmware/*
+Target = usr/lib/modules/*/extramodules/*
+Target = boot/*-ucode.img
 
 [Action]
 Description = Rebuilding the iMac20 hardware-acceleration boot entry...
 When = PostTransaction
 Exec = /usr/bin/omarchy-install-imac20-amdgpu-hwaccel --rebuild
-EOF
+HOOK_EOF
 }
 
 if ! omarchy-hw-imac20-navi14; then
@@ -104,15 +163,19 @@ case ${1:-} in
     # kernel whose modules are gone, so drop the entry if the rebuild fails.
     [[ -f $HWACCEL_UKI ]] || exit 0
     if ! (build_entry); then
-      remove_entry
+      remove_entry || true
       echo "Could not rebuild the iMac20 hardware-acceleration entry; removed it. Retry with: omarchy-install-imac20-amdgpu-hwaccel"
     fi
+    exit 0
     ;;
   "" | --default)
     [[ -f $DISPLAY_CONF ]] || { echo "Missing $DISPLAY_CONF; run omarchy-apply-hardware first"; exit 1; }
     build_entry
     install_hook
-    [[ ${1:-} == "--default" ]] && set_default
+    if [[ ${1:-} == "--default" ]]; then
+      set_default
+      register_entry
+    fi
 
     echo "Added the '$ENTRY' Limine entry."
     if [[ ${1:-} == "--default" ]]; then

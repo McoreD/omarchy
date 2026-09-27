@@ -20,25 +20,41 @@ pass "iMac20 hardware acceleration is an opt-in command"
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 stubs="$tmp_dir/bin"
-mkdir -p "$stubs" "$tmp_dir/uki" "$tmp_dir/devices/0000:03:00.0"
+mkdir -p "$stubs" "$tmp_dir/uki" "$tmp_dir/devices/0000:03:00.0" "$tmp_dir/modules/6.18.1-arch1-Watanare-T2-1-t2"
 
 echo "iMac20,1" >"$tmp_dir/product_name"
 echo 0x1002 >"$tmp_dir/devices/0000:03:00.0/vendor"
 echo 0x7340 >"$tmp_dir/devices/0000:03:00.0/device"
 echo 0x030000 >"$tmp_dir/devices/0000:03:00.0/class"
+echo linux-t2 >"$tmp_dir/modules/6.18.1-arch1-Watanare-T2-1-t2/pkgbase"
+: >"$tmp_dir/modules/6.18.1-arch1-Watanare-T2-1-t2/vmlinuz"
 
 cat >"$stubs/sudo" <<'SH'
 #!/bin/bash
 exec "$@"
 SH
 
-# Build the default UKI with whatever cmdline the display drop-in currently holds.
 cat >"$stubs/limine-mkinitcpio" <<'SH'
 #!/bin/bash
 echo "limine-mkinitcpio" >>"$TEST_LOG"
+exit 1
+SH
+
+# Build a UKI whose .cmdline is the --cmdline file.
+cat >"$stubs/mkinitcpio" <<'SH'
+#!/bin/bash
+echo "mkinitcpio $*" >>"$TEST_LOG"
 [[ -n ${FAIL_MKINITCPIO:-} ]] && exit 1
-sed -n 's/^KERNEL_CMDLINE\[default\]+=" \(.*\)"$/\1/p' "$OMARCHY_IMAC20_DISPLAY_CONF" \
-  >"$OMARCHY_UKI_DIR/omarchy_linux-t2.efi"
+while (( $# )); do
+  case $1 in
+    -k) kernel=$2; shift ;;
+    -U) uki=$2; shift ;;
+    --cmdline) cmdline=$2; shift ;;
+  esac
+  shift
+done
+[[ -f $kernel ]] || exit 1
+cat "$cmdline" >"$uki"
 SH
 
 cat >"$stubs/objcopy" <<'SH'
@@ -60,6 +76,8 @@ run() {
     OMARCHY_IMAC20_DISPLAY_CONF="$tmp_dir/imac20-display.conf" \
     OMARCHY_LIMINE_CONF="$tmp_dir/limine.conf" \
     OMARCHY_UKI_DIR="$tmp_dir/uki" \
+    OMARCHY_MODULES_DIR="$tmp_dir/modules" \
+    OMARCHY_IMAC20_HWACCEL_SAVED_DEFAULT="$tmp_dir/saved-default" \
     OMARCHY_IMAC20_HWACCEL_HOOK="$tmp_dir/hwaccel.hook" \
     TEST_LOG="$tmp_dir/calls.log" \
     PATH="$stubs:$ROOT/bin:$PATH" \
@@ -69,20 +87,35 @@ run() {
 cat >"$tmp_dir/imac20-display.conf" <<'EOF'
 KERNEL_CMDLINE[default]+=" plymouth.enable=0 nomodeset"
 EOF
-printf '%s\n' '#default_entry: <OS name>/<kernel name>' >"$tmp_dir/limine.conf"
+safe_cmdline="cryptdevice=PARTUUID=abc:root root=/dev/mapper/root rw plymouth.enable=0 nomodeset"
+echo "$safe_cmdline" >"$tmp_dir/uki/omarchy_linux-t2.efi"
+printf '%s\n' '#timeout: 3' 'default_entry: 2' 'interface_branding: Omarchy Bootloader' >"$tmp_dir/limine.conf"
+cp "$tmp_dir/limine.conf" "$tmp_dir/limine.conf.orig"
+cp "$tmp_dir/imac20-display.conf" "$tmp_dir/imac20-display.conf.orig"
+
+safe_untouched() {
+  [[ $(cat "$tmp_dir/uki/omarchy_linux-t2.efi") == "$safe_cmdline" ]] ||
+    fail "$1: safe UKI is untouched"
+  cmp -s "$tmp_dir/imac20-display.conf" "$tmp_dir/imac20-display.conf.orig" ||
+    fail "$1: display drop-in is untouched"
+  ! grep -Fq 'limine-mkinitcpio' "$tmp_dir/calls.log" ||
+    fail "$1: default UKIs are not rebuilt"
+}
 
 run || fail "opt-in succeeds" "$(cat "$tmp_dir/out.log")"
-grep -Fq 'amdgpu.modeset=1 video=efifb:off' "$tmp_dir/uki/omarchy_linux-t2-hwaccel.efi" ||
-  fail "hardware-acceleration UKI boots amdgpu with the EFI framebuffer off"
-grep -Fq 'nomodeset' "$tmp_dir/uki/omarchy_linux-t2.efi" ||
-  fail "default UKI is rebuilt with the safe flags"
-grep -Fq 'plymouth.enable=0 nomodeset' "$tmp_dir/imac20-display.conf" ||
-  fail "display drop-in is restored to the safe flags"
+[[ $(cat "$tmp_dir/uki/omarchy_linux-t2-hwaccel.efi") == \
+  "cryptdevice=PARTUUID=abc:root root=/dev/mapper/root rw plymouth.enable=0 amdgpu.modeset=1 video=efifb:off" ]] ||
+  fail "hardware-acceleration UKI keeps the safe cmdline with nomodeset swapped for amdgpu" \
+    "$(cat "$tmp_dir/uki/omarchy_linux-t2-hwaccel.efi")"
+grep -Fq 'mkinitcpio -k '"$tmp_dir"'/modules/6.18.1-arch1-Watanare-T2-1-t2/vmlinuz -U' "$tmp_dir/calls.log" ||
+  fail "hardware-acceleration UKI is built from the linux-t2 kernel"
+safe_untouched "opt-in"
 grep -Fq 'limine-entry-tool --add-efi imac20-hwaccel' "$tmp_dir/calls.log" ||
   fail "hardware-acceleration Limine entry is added"
-grep -Fq '#default_entry:' "$tmp_dir/limine.conf" ||
+cmp -s "$tmp_dir/limine.conf" "$tmp_dir/limine.conf.orig" ||
   fail "safe entry stays the default without --default"
 grep -Fq 'Target = linux-t2' "$tmp_dir/hwaccel.hook" &&
+  grep -Fq 'Target = usr/lib/firmware/*' "$tmp_dir/hwaccel.hook" &&
   grep -Fq 'omarchy-install-imac20-amdgpu-hwaccel --rebuild' "$tmp_dir/hwaccel.hook" ||
   fail "pacman hook rebuilds the entry on linux-t2 upgrades"
 pass "opt-in adds a hardware-acceleration entry next to the safe default"
@@ -90,20 +123,33 @@ pass "opt-in adds a hardware-acceleration entry next to the safe default"
 run --default || fail "--default succeeds" "$(cat "$tmp_dir/out.log")"
 grep -Fxq 'default_entry: imac20-hwaccel' "$tmp_dir/limine.conf" ||
   fail "--default boots the hardware-acceleration entry"
+[[ $(grep -c 'default_entry:' "$tmp_dir/limine.conf") == 1 ]] ||
+  fail "--default replaces the default_entry line"
+[[ $(tail -n1 "$tmp_dir/calls.log") == "limine-entry-tool --add-efi imac20-hwaccel"* ]] ||
+  fail "limine-entry-tool writes limine.conf after the default_entry edit"
+run --default || fail "--default twice succeeds"
 pass "--default makes the hardware-acceleration entry the default"
 
 : >"$tmp_dir/calls.log"
 FAIL_MKINITCPIO=1 run --rebuild || fail "--rebuild never fails the pacman transaction"
 [[ ! -e $tmp_dir/uki/omarchy_linux-t2-hwaccel.efi ]] ||
   fail "failed rebuild removes the stale hardware-acceleration UKI"
-grep -Fq '#default_entry:' "$tmp_dir/limine.conf" ||
-  fail "failed rebuild falls back to the safe default"
-grep -Fq 'plymouth.enable=0 nomodeset' "$tmp_dir/imac20-display.conf" ||
-  fail "failed rebuild restores the safe flags"
+cmp -s "$tmp_dir/limine.conf" "$tmp_dir/limine.conf.orig" ||
+  fail "failed rebuild restores Omarchy's default entry" "$(cat "$tmp_dir/limine.conf")"
+safe_untouched "failed rebuild"
 pass "failed rebuild falls back to the safe entry"
 
-run || fail "opt-in succeeds again"
+: >"$tmp_dir/calls.log"
+FAIL_MKINITCPIO=1 run && fail "failed opt-in exits non-zero"
+[[ ! -e $tmp_dir/uki/omarchy_linux-t2-hwaccel.efi ]] || fail "failed opt-in adds no UKI"
+cmp -s "$tmp_dir/limine.conf" "$tmp_dir/limine.conf.orig" || fail "failed opt-in leaves limine.conf alone"
+safe_untouched "failed opt-in"
+pass "failed opt-in leaves the safe boot path alone"
+
+run --default || fail "--default succeeds again"
 run --remove || fail "--remove succeeds"
+cmp -s "$tmp_dir/limine.conf" "$tmp_dir/limine.conf.orig" ||
+  fail "--remove after --default restores Omarchy's default entry" "$(cat "$tmp_dir/limine.conf")"
 [[ ! -e $tmp_dir/uki/omarchy_linux-t2-hwaccel.efi && ! -e $tmp_dir/hwaccel.hook ]] ||
   fail "--remove drops the entry and the hook"
 pass "--remove drops the entry and the hook"
