@@ -6,7 +6,7 @@ fi
 
 limine_conf="${OMARCHY_IMAC20_DISPLAY_CONF:-/etc/limine-entry-tool.d/imac20-display.conf}"
 repair_marker="${OMARCHY_IMAC20_REPAIR_MARKER:-/var/lib/omarchy/migrations/1789574960}"
-boot_conf="${OMARCHY_IMAC20_BOOT_CONF:-/boot/limine.conf}"
+uki_dir="${OMARCHY_IMAC20_UKI_DIR:-/boot/EFI/Linux}"
 needs_limine_rebuild=0
 
 if [[ ! -f $limine_conf ]] ||
@@ -33,13 +33,22 @@ if (( needs_limine_rebuild )); then
   sudo limine-mkinitcpio
 
   # limine-mkinitcpio exits 0 even when it skips a kernel whose build failed,
-  # and only writes an entry after a successful build. Record the repair once
-  # the linux-t2 entry actually boots with the flags.
-  entry_cmdline=$(sudo grep -A1 -E '^[[:space:]]*path:[[:space:]]*boot\(\):/EFI/Linux/[^/]*linux-t2\.efi' "$boot_conf" |
-    grep -E '^[[:space:]]*cmdline:' || true)
-  if ! grep -Eq '(^| )plymouth\.enable=0( |$)' <<<"$entry_cmdline" ||
-    ! grep -Eq '(^| )nomodeset( |$)' <<<"$entry_cmdline"; then
-    echo "The linux-t2 boot entry in $boot_conf is missing plymouth.enable=0 nomodeset; run 'sudo limine-mkinitcpio' and check its output" >&2
+  # leaving the previous UKI in place. Record the repair only once the linux-t2
+  # UKI's embedded command line carries the flags.
+  ukis=0
+  while read -r uki; do
+    [[ -n $uki ]] || continue
+    ukis=$((ukis + 1))
+    uki_cmdline=$(sudo objcopy -O binary --only-section=.cmdline "$uki" /dev/stdout 2>/dev/null | tr -d '\0')
+    if ! grep -Eq '(^|[[:space:]])plymouth\.enable=0([[:space:]]|$)' <<<"$uki_cmdline" ||
+      ! grep -Eq '(^|[[:space:]])nomodeset([[:space:]]|$)' <<<"$uki_cmdline"; then
+      echo "$uki does not boot with plymouth.enable=0 nomodeset; run 'sudo limine-mkinitcpio' and check its output" >&2
+      exit 1
+    fi
+  done < <(sudo find "$uki_dir" -maxdepth 1 -name '*linux-t2.efi' 2>/dev/null)
+
+  if (( ukis == 0 )); then
+    echo "No linux-t2 UKI found in $uki_dir; run 'sudo limine-mkinitcpio' and check its output" >&2
     exit 1
   fi
 

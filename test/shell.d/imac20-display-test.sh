@@ -93,27 +93,30 @@ printf '\n' >>"$TEST_LOG"
 "$@"
 SH
 
-# Writes the linux-t2 entry from the drop-in, like a successful build. A failed
-# build is skipped: limine-mkinitcpio still exits 0 and leaves the entry alone.
+# Builds the linux-t2 UKI from the drop-in, like a successful build. A failed
+# build is skipped: limine-mkinitcpio still exits 0 and leaves the old UKI.
 cat >"$stub_bin/limine-mkinitcpio" <<'SH'
 #!/bin/bash
 
 echo 'limine-mkinitcpio' >>"$TEST_LOG"
 [[ -n ${FAIL_UKI_BUILD:-} ]] && exit 0
 flags=$(sed -n 's/^KERNEL_CMDLINE\[default\]+=" \(.*\)"$/\1/p' "$OMARCHY_IMAC20_DISPLAY_CONF")
-cat >"$OMARCHY_IMAC20_BOOT_CONF" <<EOF
-/+Omarchy
-  //linux-t2
-    path: boot():/EFI/Linux/omarchy_linux-t2.efi#abc
-    cmdline: root=/dev/mapper/root rw $flags quiet splash
-EOF
+mkdir -p "$OMARCHY_IMAC20_UKI_DIR"
+printf 'root=/dev/mapper/root rw %s quiet splash\0' "$flags" >"$OMARCHY_IMAC20_UKI_DIR/omarchy_linux-t2.efi"
+SH
+
+# Stands in for objcopy -O binary --only-section=.cmdline UKI /dev/stdout.
+cat >"$stub_bin/objcopy" <<'SH'
+#!/bin/bash
+
+cat "$4"
 SH
 
 chmod +x "$stub_bin"/*
 
 limine_conf="$tmp_dir/imac20-display.conf"
 repair_marker="$tmp_dir/imac20-repair-complete"
-boot_conf="$tmp_dir/limine.conf"
+uki_dir="$tmp_dir/EFI/Linux"
 product_name="$tmp_dir/product_name"
 pci_devices="$tmp_dir/devices"
 
@@ -126,7 +129,7 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
-  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
+  OMARCHY_IMAC20_UKI_DIR="$uki_dir" \
   bash -euo pipefail "$migration" >/dev/null
 
 grep -Fq 'KERNEL_CMDLINE[default]+=" plymouth.enable=0 nomodeset"' "$limine_conf" ||
@@ -144,7 +147,7 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
-  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
+  OMARCHY_IMAC20_UKI_DIR="$uki_dir" \
   bash -euo pipefail "$migration" >/dev/null
 
 [[ ! -s $calls ]] || fail "an already repaired 2020 iMac is left unchanged" "$(cat "$calls")"
@@ -159,7 +162,7 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
-  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
+  OMARCHY_IMAC20_UKI_DIR="$uki_dir" \
   bash -euo pipefail "$migration" >/dev/null
 
 grep -Fxq 'limine-mkinitcpio' "$calls" ||
@@ -169,7 +172,9 @@ grep -Fxq 'limine-mkinitcpio' "$calls" ||
   fail "iMac rebuild retry leaves a completed drop-in alone" "$(cat "$calls")"
 pass "iMac display migration retries an interrupted boot image rebuild"
 
-rm -f "$repair_marker" "$boot_conf"
+rm -rf "$repair_marker" "$uki_dir"
+mkdir -p "$uki_dir"
+printf 'root=/dev/mapper/root rw quiet splash\0' >"$uki_dir/omarchy_linux-t2.efi"
 : >"$calls"
 
 if FAIL_UKI_BUILD=1 \
@@ -179,7 +184,7 @@ if FAIL_UKI_BUILD=1 \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
-  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
+  OMARCHY_IMAC20_UKI_DIR="$uki_dir" \
   bash -euo pipefail "$migration" >/dev/null 2>&1; then
   fail "iMac display migration fails when the boot entry was not rebuilt"
 fi
@@ -196,7 +201,7 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
-  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
+  OMARCHY_IMAC20_UKI_DIR="$uki_dir" \
   bash -euo pipefail "$migration" >/dev/null
 
 [[ ! -e $limine_conf ]] || fail "non-iMac Limine configuration is unchanged"
