@@ -5,7 +5,6 @@ if ! omarchy-hw-imac20-navi14; then
 fi
 
 limine_conf="${OMARCHY_IMAC20_DISPLAY_CONF:-/etc/limine-entry-tool.d/imac20-display.conf}"
-running_cmdline="${OMARCHY_IMAC20_RUNNING_CMDLINE:-/proc/cmdline}"
 repair_marker="${OMARCHY_IMAC20_REPAIR_MARKER:-/var/lib/omarchy/migrations/1789574960}"
 needs_limine_rebuild=0
 
@@ -21,14 +20,11 @@ EOF
   needs_limine_rebuild=1
 fi
 
-# Record a successful machine-wide rebuild so another user's migration does not
-# repeat it before reboot, while a missing marker still retries an interrupted
-# rebuild.
-if [[ -f $limine_conf ]] &&
-  [[ ! -e $repair_marker ]] &&
-  { [[ ! -r $running_cmdline ]] ||
-    ! grep -Eq '(^| )plymouth.enable=0( |$)' "$running_cmdline" ||
-    ! grep -Eq '(^| )nomodeset( |$)' "$running_cmdline"; }; then
+# The marker records a completed machine-wide rebuild, so another user's
+# migration does not repeat it before reboot. Rebuild whenever it is missing,
+# even if the running cmdline already has the flags: those may have been typed
+# into the Limine editor, and the next boot would be black again.
+if [[ ! -e $repair_marker ]]; then
   needs_limine_rebuild=1
 fi
 

@@ -102,21 +102,18 @@ SH
 chmod +x "$stub_bin"/*
 
 limine_conf="$tmp_dir/imac20-display.conf"
-running_cmdline="$tmp_dir/cmdline"
 repair_marker="$tmp_dir/imac20-repair-complete"
 product_name="$tmp_dir/product_name"
 pci_devices="$tmp_dir/devices"
 
 write_product_name "iMac20,1"
 write_pci_devices 0x1002:0x7340:0x030000
-echo 'quiet splash intel_iommu=on' >"$running_cmdline"
 
 PATH="$stub_bin:$ROOT/bin:$PATH" \
   TEST_LOG="$calls" \
   OMARCHY_DMI_PRODUCT_NAME="$product_name" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
-  OMARCHY_IMAC20_RUNNING_CMDLINE="$running_cmdline" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
   bash -euo pipefail "$migration" >/dev/null
 
@@ -134,7 +131,6 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_DMI_PRODUCT_NAME="$product_name" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
-  OMARCHY_IMAC20_RUNNING_CMDLINE="$running_cmdline" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
   bash -euo pipefail "$migration" >/dev/null
 
@@ -149,12 +145,11 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_DMI_PRODUCT_NAME="$product_name" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
-  OMARCHY_IMAC20_RUNNING_CMDLINE="$running_cmdline" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
   bash -euo pipefail "$migration" >/dev/null
 
 grep -Fxq 'limine-mkinitcpio' "$calls" ||
-  fail "iMac display migration retries an interrupted boot image rebuild"
+  fail "iMac display migration retries an interrupted boot image rebuild, even when the flags were typed into the Limine editor"
 [[ -f $repair_marker ]] || fail "a retried iMac display repair records completion"
 ! grep -Eq $'^(sudo\t)?(tee)(\t|$)' "$calls" ||
   fail "iMac rebuild retry leaves a completed drop-in alone" "$(cat "$calls")"
@@ -163,14 +158,12 @@ pass "iMac display migration retries an interrupted boot image rebuild"
 rm -f "$limine_conf" "$repair_marker"
 : >"$calls"
 write_product_name "MacBookPro16,1"
-echo 'quiet splash' >"$running_cmdline"
 
 PATH="$stub_bin:$ROOT/bin:$PATH" \
   TEST_LOG="$calls" \
   OMARCHY_DMI_PRODUCT_NAME="$product_name" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
-  OMARCHY_IMAC20_RUNNING_CMDLINE="$running_cmdline" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
   bash -euo pipefail "$migration" >/dev/null
 
