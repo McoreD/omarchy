@@ -6,6 +6,7 @@ fi
 
 limine_conf="${OMARCHY_IMAC20_DISPLAY_CONF:-/etc/limine-entry-tool.d/imac20-display.conf}"
 repair_marker="${OMARCHY_IMAC20_REPAIR_MARKER:-/var/lib/omarchy/migrations/1789574960}"
+boot_conf="${OMARCHY_IMAC20_BOOT_CONF:-/boot/limine.conf}"
 needs_limine_rebuild=0
 
 if [[ ! -f $limine_conf ]] ||
@@ -30,5 +31,17 @@ fi
 
 if (( needs_limine_rebuild )); then
   sudo limine-mkinitcpio
+
+  # limine-mkinitcpio exits 0 even when it skips a kernel whose build failed,
+  # and only writes an entry after a successful build. Record the repair once
+  # the linux-t2 entry actually boots with the flags.
+  entry_cmdline=$(sudo grep -A1 -E '^[[:space:]]*path:[[:space:]]*boot\(\):/EFI/Linux/[^/]*linux-t2\.efi' "$boot_conf" |
+    grep -E '^[[:space:]]*cmdline:' || true)
+  if ! grep -Eq '(^| )plymouth\.enable=0( |$)' <<<"$entry_cmdline" ||
+    ! grep -Eq '(^| )nomodeset( |$)' <<<"$entry_cmdline"; then
+    echo "The linux-t2 boot entry in $boot_conf is missing plymouth.enable=0 nomodeset; run 'sudo limine-mkinitcpio' and check its output" >&2
+    exit 1
+  fi
+
   sudo install -Dm644 /dev/null "$repair_marker"
 fi

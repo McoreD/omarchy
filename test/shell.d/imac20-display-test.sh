@@ -93,16 +93,27 @@ printf '\n' >>"$TEST_LOG"
 "$@"
 SH
 
+# Writes the linux-t2 entry from the drop-in, like a successful build. A failed
+# build is skipped: limine-mkinitcpio still exits 0 and leaves the entry alone.
 cat >"$stub_bin/limine-mkinitcpio" <<'SH'
 #!/bin/bash
 
 echo 'limine-mkinitcpio' >>"$TEST_LOG"
+[[ -n ${FAIL_UKI_BUILD:-} ]] && exit 0
+flags=$(sed -n 's/^KERNEL_CMDLINE\[default\]+=" \(.*\)"$/\1/p' "$OMARCHY_IMAC20_DISPLAY_CONF")
+cat >"$OMARCHY_IMAC20_BOOT_CONF" <<EOF
+/+Omarchy
+  //linux-t2
+    path: boot():/EFI/Linux/omarchy_linux-t2.efi#abc
+    cmdline: root=/dev/mapper/root rw $flags quiet splash
+EOF
 SH
 
 chmod +x "$stub_bin"/*
 
 limine_conf="$tmp_dir/imac20-display.conf"
 repair_marker="$tmp_dir/imac20-repair-complete"
+boot_conf="$tmp_dir/limine.conf"
 product_name="$tmp_dir/product_name"
 pci_devices="$tmp_dir/devices"
 
@@ -115,6 +126,7 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
+  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
   bash -euo pipefail "$migration" >/dev/null
 
 grep -Fq 'KERNEL_CMDLINE[default]+=" plymouth.enable=0 nomodeset"' "$limine_conf" ||
@@ -132,6 +144,7 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
+  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
   bash -euo pipefail "$migration" >/dev/null
 
 [[ ! -s $calls ]] || fail "an already repaired 2020 iMac is left unchanged" "$(cat "$calls")"
@@ -146,6 +159,7 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
+  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
   bash -euo pipefail "$migration" >/dev/null
 
 grep -Fxq 'limine-mkinitcpio' "$calls" ||
@@ -154,6 +168,23 @@ grep -Fxq 'limine-mkinitcpio' "$calls" ||
 ! grep -Eq $'^(sudo\t)?(tee)(\t|$)' "$calls" ||
   fail "iMac rebuild retry leaves a completed drop-in alone" "$(cat "$calls")"
 pass "iMac display migration retries an interrupted boot image rebuild"
+
+rm -f "$repair_marker" "$boot_conf"
+: >"$calls"
+
+if FAIL_UKI_BUILD=1 \
+  PATH="$stub_bin:$ROOT/bin:$PATH" \
+  TEST_LOG="$calls" \
+  OMARCHY_DMI_PRODUCT_NAME="$product_name" \
+  OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
+  OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
+  OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
+  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
+  bash -euo pipefail "$migration" >/dev/null 2>&1; then
+  fail "iMac display migration fails when the boot entry was not rebuilt"
+fi
+[[ ! -e $repair_marker ]] || fail "a skipped UKI build does not record the repair"
+pass "iMac display migration stays pending when limine-mkinitcpio skips the build"
 
 rm -f "$limine_conf" "$repair_marker"
 : >"$calls"
@@ -165,6 +196,7 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
   OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
   OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
+  OMARCHY_IMAC20_BOOT_CONF="$boot_conf" \
   bash -euo pipefail "$migration" >/dev/null
 
 [[ ! -e $limine_conf ]] || fail "non-iMac Limine configuration is unchanged"
