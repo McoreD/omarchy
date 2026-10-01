@@ -73,10 +73,6 @@ On these models, the installer automatically sets up the patched `linux-t2` kern
 
 On the 2020 27-inch iMac with Radeon Pro 5300/5500 (Navi 14), `amdgpu` kernel modesetting fails during SMU init and can blank the panel before the LUKS prompt. The installer keeps the EFI framebuffer on those machines with `plymouth.enable=0 nomodeset` so the LUKS prompt and the desktop are reachable.
 
-This reaches a desktop without GPU acceleration. To turn the GPU back on, run this once after install:
+This reaches a desktop without GPU acceleration. The stock `linux-t2` `amdgpu` still fails SMU init intermittently on these machines, because t2linux patch 6001 enables memory-clock DPM (UCLK) during init ([t2linux/wiki#743](https://github.com/t2linux/wiki/issues/743)), so Omarchy keeps the safe flags until `linux-t2` ships a fix.
 
-```
-omarchy-install-imac20-amdgpu-hwaccel
-```
-
-It adds an `imac20-hwaccel` Limine entry that boots the `linux-t2` kernel's own `amdgpu` with `amdgpu.modeset=1 video=efifb:off`, and keeps a pacman hook that rebuilds the entry when `linux-t2`, `mkinitcpio` or firmware is upgraded. The safe `nomodeset` entry stays in place. Reboot and pick the new entry from the Limine menu. Once it works, `omarchy-install-imac20-amdgpu-hwaccel --default` boots it by default, and `--remove` takes it out again and puts the previous default back.
+For hardware acceleration now, the community [imac20-amdgpu-patch](https://github.com/McoreD/imac20-amdgpu-patch) tooling rebuilds only `amdgpu` with the deferred-UCLK fix from wiki#743. It adds an `imac20-hwaccel` Limine entry next to the safe entry and rebuilds both on every `linux-t2` upgrade. It is not part of Omarchy, so read its README before installing.
