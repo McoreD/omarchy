@@ -34,7 +34,8 @@ if (( needs_limine_rebuild )); then
 
   # limine-mkinitcpio exits 0 even when it skips a kernel whose build failed,
   # leaving the previous UKI in place. Record the repair only once the linux-t2
-  # UKI's embedded command line carries the flags.
+  # UKI's embedded command line carries the flags. Pre-quattro installs can still
+  # hold an unused <machine-id>_linux-t2.efi, so check only the image built now.
   ukis=0
   while read -r uki; do
     [[ -n $uki ]] || continue
@@ -45,7 +46,7 @@ if (( needs_limine_rebuild )); then
       echo "$uki does not boot with plymouth.enable=0 nomodeset; run 'sudo limine-mkinitcpio' and check its output" >&2
       exit 1
     fi
-  done < <(sudo find "$uki_dir" -maxdepth 1 -name '*linux-t2.efi' 2>/dev/null)
+  done < <(sudo find "$uki_dir" -maxdepth 1 -name 'omarchy_linux-t2.efi' 2>/dev/null)
 
   if (( ukis == 0 )); then
     echo "No linux-t2 UKI found in $uki_dir; run 'sudo limine-mkinitcpio' and check its output" >&2

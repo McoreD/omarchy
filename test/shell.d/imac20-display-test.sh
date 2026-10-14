@@ -191,6 +191,23 @@ fi
 [[ ! -e $repair_marker ]] || fail "a skipped UKI build does not record the repair"
 pass "iMac display migration stays pending when limine-mkinitcpio skips the build"
 
+rm -rf "$repair_marker" "$uki_dir"
+mkdir -p "$uki_dir"
+printf 'root=/dev/mapper/root rw quiet splash\0' >"$uki_dir/0123456789abcdef_linux-t2.efi"
+: >"$calls"
+
+PATH="$stub_bin:$ROOT/bin:$PATH" \
+  TEST_LOG="$calls" \
+  OMARCHY_DMI_PRODUCT_NAME="$product_name" \
+  OMARCHY_PCI_DEVICES_PATH="$pci_devices" \
+  OMARCHY_IMAC20_DISPLAY_CONF="$limine_conf" \
+  OMARCHY_IMAC20_REPAIR_MARKER="$repair_marker" \
+  OMARCHY_IMAC20_UKI_DIR="$uki_dir" \
+  bash -euo pipefail "$migration" >/dev/null ||
+  fail "a leftover pre-quattro linux-t2 UKI does not block the iMac display migration"
+[[ -f $repair_marker ]] || fail "the iMac display repair is recorded beside a leftover pre-quattro UKI"
+pass "iMac display migration ignores a leftover pre-quattro linux-t2 UKI"
+
 rm -f "$limine_conf" "$repair_marker"
 : >"$calls"
 write_product_name "MacBookPro16,1"
